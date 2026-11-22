@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+work
+.env
+*.log
+token_long.txt
+cloudflared.exe
+tunnel.log
+bot.log

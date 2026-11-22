@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: whatsapp-tiktok-bot
+    runtime: docker
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: ACCESS_TOKEN
+        sync: false
+      - key: PHONE_NUMBER_ID
+        sync: false
+      - key: APP_SECRET
+        sync: false
+      - key: APP_ID
+        sync: false
+      - key: VERIFY_TOKEN
+        value: mon-secret-tiktok
+      - key: API_VERSION
+        value: v23.0
+      - key: MAX_MB
+        value: "16"
