@@ -19,6 +19,7 @@ import requests
 from flask import Flask, abort, request
 
 import config
+import quota
 from downloader import download_tiktok, extract_tiktok_url, prepare_for_whatsapp
 
 logging.basicConfig(
@@ -36,6 +37,13 @@ GRAPH = f"https://graph.facebook.com/{config.API_VERSION}"
 _seen: "OrderedDict[str, float]" = OrderedDict()
 _seen_lock = threading.Lock()
 
+# Vidéos déjà envoyées (URL -> media_id) pour ne pas les retélécharger.
+_media_cache: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
+_media_lock = threading.Lock()
+
+# Compteur de messages pour rester dans le gratuit.
+QUOTA = quota.Quota(config.QUOTA_FILE, config.DAILY_LIMIT, config.MONTHLY_LIMIT)
+
 # Nombre de téléchargements simultanés maximum.
 _slots = threading.Semaphore(3)
 
@@ -43,6 +51,32 @@ HELP_TEXT = (
     "👋 Envoie-moi un lien TikTok et je te renvoie la vidéo ici.\n\n"
     "Exemple :\nhttps://www.tiktok.com/@compte/video/1234567890"
 )
+
+DAILY_TEXT = (
+    "🌙 Le bot a atteint sa limite gratuite du jour.\n"
+    "Reviens demain : ça se remet à zéro à minuit (heure d'Haïti)."
+)
+
+
+def cached_media(url: str) -> str | None:
+    with _media_lock:
+        item = _media_cache.get(url)
+        if not item:
+            return None
+        media_id, stamp = item
+        if time.time() - stamp > config.MEDIA_CACHE_MINUTES * 60:
+            _media_cache.pop(url, None)
+            return None
+        _media_cache.move_to_end(url)
+        return media_id
+
+
+def cache_media(url: str, media_id: str) -> None:
+    with _media_lock:
+        _media_cache[url] = (media_id, time.time())
+        _media_cache.move_to_end(url)
+        while len(_media_cache) > 200:
+            _media_cache.popitem(last=False)
 
 
 def already_seen(message_id: str) -> bool:
@@ -62,9 +96,9 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {config.ACCESS_TOKEN}"}
 
 
-def send_text(to: str, body: str) -> None:
+def send_text(to: str, body: str) -> bool:
     try:
-        requests.post(
+        response = requests.post(
             f"{GRAPH}/{config.PHONE_NUMBER_ID}/messages",
             headers=_headers(),
             json={
@@ -75,8 +109,14 @@ def send_text(to: str, body: str) -> None:
             },
             timeout=30,
         )
+        if response.status_code >= 400:
+            log.warning("Texte refusé : %s", response.text[:300])
+            return False
+        QUOTA.spend()
+        return True
     except Exception:
         log.exception("Envoi du texte impossible")
+        return False
 
 
 def upload_media(path: str, mime: str = "video/mp4") -> str:
@@ -108,6 +148,7 @@ def send_video(to: str, media_id: str) -> bool:
     if response.status_code >= 400:
         log.warning("Envoi vidéo refusé : %s", response.text[:300])
         return False
+    QUOTA.spend()
     return True
 
 
@@ -126,6 +167,7 @@ def send_document(to: str, media_id: str, filename: str) -> bool:
     if response.status_code >= 400:
         log.warning("Envoi document refusé : %s", response.text[:300])
         return False
+    QUOTA.spend()
     return True
 
 
@@ -136,6 +178,14 @@ def process(sender: str, url: str) -> None:
     if not _slots.acquire(timeout=120):
         send_text(sender, "⏳ Trop de demandes en même temps. Réessaie dans un instant.")
         return
+
+    # Vidéo déjà envoyée récemment : on renvoie la même sans la retélécharger.
+    known = cached_media(url)
+    if known:
+        log.info("Vidéo déjà en cache, renvoi direct")
+        if send_video(sender, known):
+            _slots.release()
+            return
 
     workdir = tempfile.mkdtemp(prefix="tt_", dir=os.path.abspath(config.WORK_DIR) if os.path.isdir(config.WORK_DIR) else None)
     try:
@@ -159,6 +209,8 @@ def process(sender: str, url: str) -> None:
             # Deuxième chance : envoyer en fichier joint.
             media_id = upload_media(path, "video/mp4")
             send_document(sender, media_id, os.path.basename(path))
+        else:
+            cache_media(url, media_id)
 
     except Exception as exc:
         log.exception("Échec du traitement")
@@ -203,7 +255,18 @@ def handle_message(message: dict) -> None:
         send_text(sender, HELP_TEXT)
         return
 
-    send_text(sender, "⏳ Je prépare ta vidéo, patiente quelques secondes…")
+    state = QUOTA.check()
+    if state == quota.Quota.MONTHLY:
+        log.warning("Plafond mensuel atteint (%s) : demande ignorée", QUOTA.summary())
+        return
+    if state == quota.Quota.DAILY:
+        log.info("Plafond du jour atteint (%s) : on prévient l'utilisateur", QUOTA.summary())
+        send_text(sender, DAILY_TEXT)
+        return
+
+    # Mode économie : pas de message d'attente, la vidéo arrive directement.
+    if not config.SINGLE_MESSAGE:
+        send_text(sender, "⏳ Je prépare ta vidéo, patiente quelques secondes…")
     threading.Thread(target=process, args=(sender, url), daemon=True).start()
 
 
@@ -224,7 +287,7 @@ def signature_ok() -> bool:
 
 @app.get("/")
 def health() -> str:
-    return "bot ok"
+    return f"bot ok | {QUOTA.summary()}"
 
 
 @app.get("/webhook")
@@ -278,6 +341,7 @@ def main() -> None:
     print(f"  Serveur : http://localhost:{config.PORT}")
     print(f"  Webhook : http://localhost:{config.PORT}/webhook")
     print(f"  Mot de vérification : {config.VERIFY_TOKEN}")
+    print(f"  Limite : {config.DAILY_LIMIT}/jour, {config.MONTHLY_LIMIT}/mois")
     print("=" * 60)
     print("  Laisse cette fenêtre ouverte. Ctrl+C pour arrêter.\n")
 

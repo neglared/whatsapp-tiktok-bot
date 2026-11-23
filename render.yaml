@@ -3,6 +3,7 @@ services:
     name: whatsapp-tiktok-bot
     runtime: docker
     plan: free
+    region: virginia
     healthCheckPath: /
     envVars:
       - key: ACCESS_TOKEN
@@ -14,8 +15,14 @@ services:
       - key: APP_ID
         sync: false
       - key: VERIFY_TOKEN
-        value: mon-secret-tiktok
+        sync: false
       - key: API_VERSION
         value: v23.0
       - key: MAX_MB
         value: "16"
+      - key: DAILY_LIMIT
+        value: "30"
+      - key: MONTHLY_LIMIT
+        value: "980"
+      - key: SINGLE_MESSAGE
+        value: "1"
