@@ -41,6 +41,14 @@ _seen_lock = threading.Lock()
 _media_cache: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
 _media_lock = threading.Lock()
 
+# (destinataire, url) -> date d'envoi : évite de facturer un 2e envoi
+# quand l'utilisateur renvoie le même lien par impatience.
+_sent: "OrderedDict[tuple[str, str], float]" = OrderedDict()
+_sent_lock = threading.Lock()
+
+# Durée pendant laquelle on ne renvoie pas deux fois la même vidéo au même client.
+DEDUP_SECONDS = 300
+
 # Compteur de messages pour rester dans le gratuit.
 QUOTA = quota.Quota(config.QUOTA_FILE, config.DAILY_LIMIT, config.MONTHLY_LIMIT)
 
@@ -77,6 +85,26 @@ def cache_media(url: str, media_id: str) -> None:
         _media_cache.move_to_end(url)
         while len(_media_cache) > 200:
             _media_cache.popitem(last=False)
+
+
+def recently_sent(sender: str, url: str) -> bool:
+    """Vrai si on a déjà envoyé cette vidéo à ce client il y a peu."""
+    with _sent_lock:
+        stamp = _sent.get((sender, url))
+        if not stamp:
+            return False
+        if time.time() - stamp > DEDUP_SECONDS:
+            _sent.pop((sender, url), None)
+            return False
+        return True
+
+
+def mark_sent(sender: str, url: str) -> None:
+    with _sent_lock:
+        _sent[(sender, url)] = time.time()
+        _sent.move_to_end((sender, url))
+        while len(_sent) > 1000:
+            _sent.popitem(last=False)
 
 
 def already_seen(message_id: str) -> bool:
@@ -184,6 +212,7 @@ def process(sender: str, url: str) -> None:
     if known:
         log.info("Vidéo déjà en cache, renvoi direct")
         if send_video(sender, known):
+            mark_sent(sender, url)
             _slots.release()
             return
 
@@ -208,9 +237,11 @@ def process(sender: str, url: str) -> None:
         if not send_video(sender, media_id):
             # Deuxième chance : envoyer en fichier joint.
             media_id = upload_media(path, "video/mp4")
-            send_document(sender, media_id, os.path.basename(path))
+            if send_document(sender, media_id, os.path.basename(path)):
+                mark_sent(sender, url)
         else:
             cache_media(url, media_id)
+            mark_sent(sender, url)
 
     except Exception as exc:
         log.exception("Échec du traitement")
@@ -265,6 +296,10 @@ def handle_message(message: dict) -> None:
         return
 
     # Mode économie : pas de message d'attente, la vidéo arrive directement.
+    if recently_sent(sender, url):
+        log.info("Même lien déjà envoyé à %s il y a moins de 5 min : on ignore", sender)
+        return
+
     if not config.SINGLE_MESSAGE:
         send_text(sender, "⏳ Je prépare ta vidéo, patiente quelques secondes…")
     threading.Thread(target=process, args=(sender, url), daemon=True).start()

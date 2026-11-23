@@ -1,0 +1,19 @@
+name: Garder le bot eveille
+
+# Render (gratuit) endort le service apres 15 min sans trafic.
+# Ce workflow envoie un petit "ping" toutes les 10 minutes pour le garder actif.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping du bot
+        run: |
+          echo "Ping a $(date -u)"
+          curl -fsS --max-time 90 --retry 2 --retry-delay 20 \
+            https://whatsapp-tiktok-bot.onrender.com/ || echo "reveil en cours (normal apres une veille)"
