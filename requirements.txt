@@ -4,3 +4,5 @@ requests>=2.31
 python-dotenv>=1.0
 yt-dlp>=2024.12.13
 imageio-ffmpeg>=0.5
+curl-cffi>=0.7
+

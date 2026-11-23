@@ -6,9 +6,22 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 import imageio_ffmpeg
 import yt_dlp
+
+# curl_cffi (optionnel) permet à yt-dlp d'imiter un vrai navigateur :
+# TikTok bloque beaucoup moins les serveurs quand on ressemble à Chrome.
+_IMPERSONATE = None
+try:  # pragma: no cover
+    import curl_cffi  # noqa: F401
+
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+
+    _IMPERSONATE = ImpersonateTarget("chrome")
+except Exception:  # pragma: no cover
+    _IMPERSONATE = None
 
 # Reconnaît les liens TikTok (tiktok.com, vm.tiktok.com, vt.tiktok.com, m.tiktok.com...)
 _TIKTOK_RE = re.compile(
@@ -38,10 +51,7 @@ def _ffmpeg_dir() -> str:
     return os.path.dirname(_ffmpeg_exe())
 
 
-def download_tiktok(url: str, workdir: str) -> str:
-    """Télécharge une vidéo TikTok et retourne le chemin du fichier."""
-    os.makedirs(workdir, exist_ok=True)
-
+def _ydl_options(workdir: str) -> dict:
     options = {
         "outtmpl": os.path.join(workdir, "%(id)s.%(ext)s"),
         "format": (
@@ -53,33 +63,92 @@ def download_tiktok(url: str, workdir: str) -> str:
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,
         "restrictfilenames": True,
         "ffmpeg_location": _ffmpeg_dir(),
-        "socket_timeout": 30,
-        "retries": 2,
+        # Beaucoup plus patient : TikTok peut être lent depuis un serveur.
+        "socket_timeout": 60,
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 5,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
+    if _IMPERSONATE:
+        options["impersonate"] = _IMPERSONATE
+    return options
 
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=True)
-        video_id = info.get("id") or "video"
 
-    # yt-dlp peut changer l'extension après fusion : on cherche le fichier réel.
+# Erreurs qui méritent une nouvelle tentative (réseau, lenteur, blocage passager).
+_RETRY_HINTS = (
+    "timed out",
+    "timeout",
+    "transport",
+    "connection",
+    "temporarily",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "unable to download webpage",
+    "unable to download video data",
+)
+
+
+def _should_retry(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(hint in text for hint in _RETRY_HINTS)
+
+
+def _find_video(workdir: str, video_id: str) -> str:
+    """Retourne le fichier vidéo téléchargé."""
+    extensions = {".mp4", ".mkv", ".webm", ".mov"}
     candidates = [
         p
         for p in glob.glob(os.path.join(workdir, f"{video_id}.*"))
-        if os.path.splitext(p)[1].lower() in {".mp4", ".mkv", ".webm", ".mov"}
+        if os.path.splitext(p)[1].lower() in extensions
     ]
     if not candidates:
         candidates = [
             p
             for p in glob.glob(os.path.join(workdir, "*"))
-            if os.path.splitext(p)[1].lower() in {".mp4", ".mkv", ".webm", ".mov"}
+            if os.path.splitext(p)[1].lower() in extensions
         ]
     if not candidates:
         raise RuntimeError("Fichier vidéo introuvable après téléchargement.")
 
     candidates.sort(key=os.path.getsize, reverse=True)
     return candidates[0]
+
+
+def download_tiktok(url: str, workdir: str, attempts: int = 4) -> str:
+    """Télécharge une vidéo TikTok et retourne le chemin du fichier.
+
+    Réessaie plusieurs fois en cas de lenteur ou de blocage réseau passager.
+    """
+    os.makedirs(workdir, exist_ok=True)
+
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with yt_dlp.YoutubeDL(_ydl_options(workdir)) as ydl:
+                info = ydl.extract_info(url, download=True)
+                video_id = (info or {}).get("id") or "video"
+            return _find_video(workdir, video_id)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if attempt >= attempts or not _should_retry(exc):
+                raise
+            # On attend un peu plus longtemps à chaque essai (2 s, 4 s, 6 s).
+            time.sleep(2 * attempt)
+
+    raise last_error  # pragma: no cover
 
 
 def _probe(path: str) -> str:
