@@ -246,15 +246,15 @@ def process(sender: str, url: str) -> None:
     except Exception as exc:
         log.exception("Échec du traitement")
         message = str(exc).lower()
-        if "timed out" in message or "timeout" in message or "transport" in message:
+        if "private" in message or "login" in message or "not available" in message:
+            reason = "Cette vidéo est privée, supprimée ou interdite dans cette région."
+        elif "unsupported url" in message:
+            reason = "Ce lien n'est pas reconnu comme un lien TikTok valide."
+        elif "timed out" in message or "timeout" in message or "transport" in message:
             reason = (
                 "TikTok n'a pas répondu à temps.\n"
                 "Renvoie le même lien : ça marche presque toujours au 2e essai."
             )
-        elif "private" in message or "login" in message or "not available" in message:
-            reason = "Cette vidéo est privée, supprimée ou interdite dans cette région."
-        elif "unsupported url" in message:
-            reason = "Ce lien n'est pas reconnu comme un lien TikTok valide."
         elif "404" in message or "not found" in message:
             reason = "Cette vidéo n'existe plus."
         else:

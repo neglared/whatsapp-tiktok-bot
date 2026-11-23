@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import re
 import shutil
@@ -9,7 +10,10 @@ import subprocess
 import time
 
 import imageio_ffmpeg
+import requests
 import yt_dlp
+
+log = logging.getLogger("downloader")
 
 # curl_cffi (optionnel) permet à yt-dlp d'imiter un vrai navigateur :
 # TikTok bloque beaucoup moins les serveurs quand on ressemble à Chrome.
@@ -22,6 +26,11 @@ try:  # pragma: no cover
     _IMPERSONATE = ImpersonateTarget("chrome")
 except Exception:  # pragma: no cover
     _IMPERSONATE = None
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 
 # Reconnaît les liens TikTok (tiktok.com, vm.tiktok.com, vt.tiktok.com, m.tiktok.com...)
 _TIKTOK_RE = re.compile(
@@ -72,10 +81,7 @@ def _ydl_options(workdir: str) -> dict:
         "fragment_retries": 10,
         "extractor_retries": 5,
         "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
+            "User-Agent": _BROWSER_UA,
             "Accept-Language": "en-US,en;q=0.9",
         },
     }
@@ -127,28 +133,101 @@ def _find_video(workdir: str, video_id: str) -> str:
     return candidates[0]
 
 
-def download_tiktok(url: str, workdir: str, attempts: int = 4) -> str:
-    """Télécharge une vidéo TikTok et retourne le chemin du fichier.
-
-    Réessaie plusieurs fois en cas de lenteur ou de blocage réseau passager.
-    """
-    os.makedirs(workdir, exist_ok=True)
-
-    last_error: Exception | None = None
+def _yt_dlp_download(url: str, workdir: str, extra: dict | None = None, attempts: int = 3) -> str:
+    """Télécharge avec yt-dlp, en réessayant si le réseau est capricieux."""
+    last: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            with yt_dlp.YoutubeDL(_ydl_options(workdir)) as ydl:
+            options = _ydl_options(workdir)
+            if extra:
+                options.update(extra)
+            with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)
                 video_id = (info or {}).get("id") or "video"
             return _find_video(workdir, video_id)
         except Exception as exc:  # noqa: BLE001
-            last_error = exc
+            last = exc
             if attempt >= attempts or not _should_retry(exc):
                 raise
-            # On attend un peu plus longtemps à chaque essai (2 s, 4 s, 6 s).
             time.sleep(2 * attempt)
+    raise last  # pragma: no cover
 
-    raise last_error  # pragma: no cover
+
+def _tiktok_mobile_api(url: str, workdir: str) -> str:
+    """Deuxième chance : on passe par l'API mobile de TikTok.
+
+    Quand le site web renvoie 504 depuis un serveur, l'API mobile répond souvent.
+    """
+    return _yt_dlp_download(
+        url,
+        workdir,
+        {
+            "extractor_args": {
+                "tiktok": {
+                    "api_hostname": ["api22-normal-c-useast2a.tiktokv.com"],
+                }
+            }
+        },
+    )
+
+
+def _download_direct(link: str, path: str) -> None:
+    headers = {"User-Agent": _BROWSER_UA, "Referer": "https://www.tiktok.com/"}
+    with requests.get(link, headers=headers, stream=True, timeout=90) as response:
+        response.raise_for_status()
+        with open(path, "wb") as handle:
+            for chunk in response.iter_content(1 << 16):
+                if chunk:
+                    handle.write(chunk)
+
+
+def _tikwm_download(url: str, workdir: str) -> str:
+    """Dernier recours : service public tikwm.com qui renvoie un lien direct."""
+    response = requests.get(
+        "https://www.tikwm.com/api/",
+        params={"url": url, "hd": 1},
+        headers={"User-Agent": _BROWSER_UA},
+        timeout=45,
+    )
+    response.raise_for_status()
+    data = (response.json() or {}).get("data") or {}
+    link = data.get("hdplay") or data.get("play") or data.get("wmplay")
+    if not link:
+        raise RuntimeError("tikwm : aucun lien vidéo renvoyé")
+
+    if link.startswith("/"):
+        link = "https://www.tikwm.com" + link
+
+    path = os.path.join(workdir, "tikwm.mp4")
+    _download_direct(link, path)
+    if os.path.getsize(path) < 20_000:
+        raise RuntimeError("tikwm : fichier reçu trop petit")
+    return path
+
+
+# Les stratégies sont essayées dans l'ordre, jusqu'à ce qu'une réussisse.
+_STRATEGIES = (
+    ("yt-dlp", _yt_dlp_download),
+    ("yt-dlp api mobile", _tiktok_mobile_api),
+    ("tikwm", _tikwm_download),
+)
+
+
+def download_tiktok(url: str, workdir: str) -> str:
+    """Télécharge une vidéo TikTok en essayant plusieurs méthodes."""
+    os.makedirs(workdir, exist_ok=True)
+
+    errors: list[str] = []
+    for name, strategy in _STRATEGIES:
+        try:
+            path = strategy(url, workdir)
+            log.info("Téléchargement réussi via %s", name)
+            return path
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Méthode %s en échec : %s", name, str(exc)[:250])
+            errors.append(f"{name}: {exc}")
+
+    raise RuntimeError("Toutes les méthodes ont échoué -> " + " | ".join(errors)[:600])
 
 
 def _probe(path: str) -> str:
