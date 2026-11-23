@@ -7,3 +7,5 @@ work/
 *.log
 token_long.txt
 cloudflared.exe
+.render-service-id.txt
+
