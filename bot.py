@@ -337,6 +337,62 @@ def health() -> str:
     return f"bot ok | {QUOTA.summary()}"
 
 
+@app.get("/probe")
+def probe():
+    """Teste une URL depuis le serveur : /probe?token=...&url=...
+
+    Sert uniquement au diagnostic (joignabilité des domaines TikTok).
+    """
+    if request.args.get("token") != config.VERIFY_TOKEN:
+        abort(403)
+
+    url = request.args.get("url", "")
+    if not url.lower().startswith(("http://", "https://")):
+        abort(400)
+
+    try:
+        timeout = min(int(request.args.get("timeout", "20")), 60)
+    except ValueError:
+        timeout = 20
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    result: dict = {"url": url}
+    started = time.time()
+    follow = request.args.get("noredirect") != "1"
+    try:
+        with requests.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            stream=True,
+            allow_redirects=follow,
+        ) as response:
+            result["status"] = response.status_code
+            result["url_finale"] = response.url
+            result["redirection"] = response.headers.get("Location", "")
+            result["type"] = response.headers.get("Content-Type", "")
+            result["taille_annoncee"] = response.headers.get("Content-Length", "")
+            chunk = b""
+            for piece in response.iter_content(65536):
+                chunk += piece
+                if len(chunk) >= 3000:
+                    break
+            result["octets_lus"] = len(chunk)
+            result["extrait"] = chunk[:250].decode("utf-8", "ignore")
+    except Exception as exc:  # noqa: BLE001
+        result["erreur"] = str(exc)[:220]
+
+    result["secondes"] = round(time.time() - started, 1)
+    return result
+
+
 @app.get("/diag")
 def diag():
     """Teste chaque méthode de téléchargement depuis le serveur.
