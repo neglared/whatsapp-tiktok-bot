@@ -212,6 +212,9 @@ _STRATEGIES = (
     ("tikwm", _tikwm_download),
 )
 
+# Nom public, utilisé par le diagnostic du bot.
+STRATEGIES = _STRATEGIES
+
 
 def download_tiktok(url: str, workdir: str) -> str:
     """Télécharge une vidéo TikTok en essayant plusieurs méthodes."""

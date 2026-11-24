@@ -20,7 +20,12 @@ from flask import Flask, abort, request
 
 import config
 import quota
-from downloader import download_tiktok, extract_tiktok_url, prepare_for_whatsapp
+from downloader import (
+    STRATEGIES,
+    download_tiktok,
+    extract_tiktok_url,
+    prepare_for_whatsapp,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -330,6 +335,44 @@ def signature_ok() -> bool:
 @app.get("/")
 def health() -> str:
     return f"bot ok | {QUOTA.summary()}"
+
+
+@app.get("/diag")
+def diag():
+    """Teste chaque méthode de téléchargement depuis le serveur.
+
+    Protégé par le mot de vérification : /diag?token=...&url=...
+    """
+    if request.args.get("token") != config.VERIFY_TOKEN:
+        abort(403)
+
+    url = request.args.get("url", "https://vt.tiktok.com/ZSsdwp5tG/")
+    only = request.args.get("only")
+
+    results = {}
+    workdir = tempfile.mkdtemp(prefix="diag_")
+    try:
+        for name, strategy in STRATEGIES:
+            if only and only not in name:
+                continue
+            started = time.time()
+            try:
+                path = strategy(url, workdir)
+                results[name] = {
+                    "ok": True,
+                    "secondes": round(time.time() - started, 1),
+                    "mo": round(os.path.getsize(path) / 1048576, 2),
+                }
+            except Exception as exc:  # noqa: BLE001
+                results[name] = {
+                    "ok": False,
+                    "secondes": round(time.time() - started, 1),
+                    "erreur": str(exc)[:200],
+                }
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    return {"url": url, "resultats": results}
 
 
 @app.get("/webhook")
