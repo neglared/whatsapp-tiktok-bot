@@ -75,11 +75,12 @@ def _ydl_options(workdir: str) -> dict:
         "noprogress": True,
         "restrictfilenames": True,
         "ffmpeg_location": _ffmpeg_dir(),
-        # Beaucoup plus patient : TikTok peut être lent depuis un serveur.
-        "socket_timeout": 60,
-        "retries": 10,
-        "fragment_retries": 10,
-        "extractor_retries": 5,
+        # Bornes volontairement courtes : mieux vaut échouer vite et réessayer
+        # plus tard que bloquer l'utilisateur plusieurs minutes.
+        "socket_timeout": 25,
+        "retries": 2,
+        "fragment_retries": 2,
+        "extractor_retries": 2,
         "http_headers": {
             "User-Agent": _BROWSER_UA,
             "Accept-Language": "en-US,en;q=0.9",
@@ -133,10 +134,11 @@ def _find_video(workdir: str, video_id: str) -> str:
     return candidates[0]
 
 
-def _yt_dlp_download(url: str, workdir: str, extra: dict | None = None, attempts: int = 3) -> str:
+def _yt_dlp_download(url: str, workdir: str, extra: dict | None = None, attempts: int = 2) -> str:
     """Télécharge avec yt-dlp, en réessayant si le réseau est capricieux."""
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
+        started = time.time()
         try:
             options = _ydl_options(workdir)
             if extra:
@@ -144,9 +146,12 @@ def _yt_dlp_download(url: str, workdir: str, extra: dict | None = None, attempts
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=True)
                 video_id = (info or {}).get("id") or "video"
-            return _find_video(workdir, video_id)
+            path = _find_video(workdir, video_id)
+            log.info("yt-dlp OK en %.1fs", time.time() - started)
+            return path
         except Exception as exc:  # noqa: BLE001
             last = exc
+            log.info("yt-dlp essai %d échoué en %.1fs", attempt, time.time() - started)
             if attempt >= attempts or not _should_retry(exc):
                 raise
             time.sleep(2 * attempt)
@@ -213,7 +218,6 @@ def _tikwm_download(url: str, workdir: str) -> str:
 # Les stratégies sont essayées dans l'ordre, jusqu'à ce qu'une réussisse.
 _STRATEGIES = (
     ("yt-dlp", _yt_dlp_download),
-    ("yt-dlp api mobile", _tiktok_mobile_api),
     ("tikwm", _tikwm_download),
 )
 

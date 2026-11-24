@@ -251,7 +251,9 @@ def process(sender: str, url: str) -> None:
     except Exception as exc:
         log.exception("Échec du traitement")
         message = str(exc).lower()
-        if "private" in message or "login" in message or "not available" in message:
+        if "cross_border" in message or "10231" in message:
+            reason = "Cette vidéo n'est pas accessible depuis notre serveur (restriction de pays)."
+        elif "private" in message or "login" in message or "not available" in message:
             reason = "Cette vidéo est privée, supprimée ou interdite dans cette région."
         elif "unsupported url" in message:
             reason = "Ce lien n'est pas reconnu comme un lien TikTok valide."
