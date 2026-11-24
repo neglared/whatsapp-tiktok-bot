@@ -15,17 +15,19 @@ import yt_dlp
 
 log = logging.getLogger("downloader")
 
-# curl_cffi (optionnel) permet à yt-dlp d'imiter un vrai navigateur :
-# TikTok bloque beaucoup moins les serveurs quand on ressemble à Chrome.
+# curl_cffi (optionnel) permet à yt-dlp d'imiter un vrai navigateur.
+# Désactivé par défaut : sur un serveur, l'imitation se fait parfois "piéger"
+# par TikTok (connexion volontairement ralentie). Activable via IMPERSONATE=1.
 _IMPERSONATE = None
-try:  # pragma: no cover
-    import curl_cffi  # noqa: F401
+if os.getenv("IMPERSONATE", "0") == "1":
+    try:  # pragma: no cover
+        import curl_cffi  # noqa: F401
 
-    from yt_dlp.networking.impersonate import ImpersonateTarget
+        from yt_dlp.networking.impersonate import ImpersonateTarget
 
-    _IMPERSONATE = ImpersonateTarget("chrome")
-except Exception:  # pragma: no cover
-    _IMPERSONATE = None
+        _IMPERSONATE = ImpersonateTarget("chrome")
+    except Exception:  # pragma: no cover
+        _IMPERSONATE = None
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
