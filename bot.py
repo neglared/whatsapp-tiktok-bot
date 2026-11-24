@@ -368,6 +368,8 @@ def probe():
     result: dict = {"url": url}
     started = time.time()
     follow = request.args.get("noredirect") != "1"
+    full = request.args.get("full") == "1"
+    limit = 5 * 1024 * 1024 if full else 3000
     try:
         with requests.get(
             url,
@@ -384,7 +386,7 @@ def probe():
             chunk = b""
             for piece in response.iter_content(65536):
                 chunk += piece
-                if len(chunk) >= 3000:
+                if len(chunk) >= limit:
                     break
             result["octets_lus"] = len(chunk)
             result["extrait"] = chunk[:250].decode("utf-8", "ignore")
