@@ -184,9 +184,14 @@ def _download_direct(link: str, path: str) -> None:
 def _tikwm_download(url: str, workdir: str) -> str:
     """Dernier recours : service public tikwm.com qui renvoie un lien direct."""
     response = requests.get(
-        "https://www.tikwm.com/api/",
+        "https://tikwm.com/api/",
         params={"url": url, "hd": 1},
-        headers={"User-Agent": _BROWSER_UA},
+        headers={
+            "User-Agent": _BROWSER_UA,
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://tikwm.com/",
+            "Origin": "https://tikwm.com",
+        },
         timeout=45,
     )
     response.raise_for_status()
@@ -196,7 +201,7 @@ def _tikwm_download(url: str, workdir: str) -> str:
         raise RuntimeError("tikwm : aucun lien vidéo renvoyé")
 
     if link.startswith("/"):
-        link = "https://www.tikwm.com" + link
+        link = "https://tikwm.com" + link
 
     path = os.path.join(workdir, "tikwm.mp4")
     _download_direct(link, path)
