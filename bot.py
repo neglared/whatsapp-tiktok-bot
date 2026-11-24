@@ -404,12 +404,13 @@ def diag():
 
     url = request.args.get("url", "https://vt.tiktok.com/ZSsdwp5tG/")
     only = request.args.get("only")
+    stop_first = request.args.get("stop") == "1"
 
     results = {}
     workdir = tempfile.mkdtemp(prefix="diag_")
     try:
         for name, strategy in STRATEGIES:
-            if only and only not in name:
+            if only and only != name:
                 continue
             started = time.time()
             try:
@@ -419,6 +420,8 @@ def diag():
                     "secondes": round(time.time() - started, 1),
                     "mo": round(os.path.getsize(path) / 1048576, 2),
                 }
+                if stop_first:
+                    break
             except Exception as exc:  # noqa: BLE001
                 results[name] = {
                     "ok": False,
