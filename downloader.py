@@ -275,6 +275,29 @@ def _video_links_from_html(html: str) -> list[str]:
     return cleaned
 
 
+def _download_with_session(
+    session: requests.Session, link: str, referer: str, path: str
+) -> None:
+    """Télécharge le fichier vidéo en gardant les cookies et le référent.
+
+    Le CDN de TikTok renvoie 403 si la requête ne ressemble pas à celle
+    d'un navigateur qui vient de lire la page.
+    """
+    headers = {
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": referer or "https://www.tiktok.com/",
+        "Origin": "https://www.tiktok.com",
+        "Range": "bytes=0-",
+    }
+    with session.get(link, headers=headers, stream=True, timeout=90) as response:
+        response.raise_for_status()
+        with open(path, "wb") as handle:
+            for chunk in response.iter_content(1 << 16):
+                if chunk:
+                    handle.write(chunk)
+
+
 def _page_scrape(url: str, workdir: str) -> str:
     """Extrait la vidéo en lisant directement les données de la page TikTok.
 
@@ -303,7 +326,7 @@ def _page_scrape(url: str, workdir: str) -> str:
     for index, link in enumerate(links[:6]):
         path = os.path.join(workdir, f"page_{index}.mp4")
         try:
-            _download_direct(link, path)
+            _download_with_session(session, link, response.url, path)
             if os.path.getsize(path) > 20_000:
                 return path
             errors.append(f"lien {index} trop petit")
