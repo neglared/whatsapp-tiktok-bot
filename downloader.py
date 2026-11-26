@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import glob
+import json
 import logging
 import os
 import re
@@ -217,10 +218,105 @@ def _tikwm_download(url: str, workdir: str) -> str:
     return path
 
 
+def _collect_video_urls(node, out: list[str]) -> None:
+    """Parcourt un JSON TikTok et récupère tous les liens de vidéo."""
+    if isinstance(node, str):
+        if node.startswith("http") and "video/tos" in node:
+            out.append(node)
+    elif isinstance(node, dict):
+        for value in node.values():
+            _collect_video_urls(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_video_urls(value, out)
+
+
+def _unescape(text: str) -> str:
+    return text.replace("\\u002F", "/").replace("\\/", "/")
+
+
+def _video_links_from_html(html: str) -> list[str]:
+    """Extrait les liens de vidéo depuis la page TikTok, sans JS challenge."""
+    urls: list[str] = []
+
+    for script_id in (
+        "__UNIVERSAL_DATA_FOR_REHYDRATION__",
+        "SIGI_STATE",
+        "__NEXT_DATA__",
+    ):
+        match = re.search(
+            r'<script id="' + script_id + r'"[^>]*>(.*?)</script>', html, re.S
+        )
+        if not match:
+            continue
+        try:
+            data = json.loads(match.group(1))
+        except Exception:
+            continue
+        _collect_video_urls(data, urls)
+        if urls:
+            break
+
+    if not urls:
+        # Filet de sécurité : recherche brute dans le HTML.
+        for raw in re.findall(r'"playAddr":"(https:[^"]+)"', html):
+            urls.append(_unescape(raw))
+        for raw in re.findall(r'"downloadAddr":"(https:[^"]+)"', html):
+            urls.append(_unescape(raw))
+
+    # On écarte les versions avec filigrane et les doublons.
+    cleaned: list[str] = []
+    for link in urls:
+        link = _unescape(link)
+        if "/logo/" in link or "mps/logo" in link:
+            continue
+        if link not in cleaned:
+            cleaned.append(link)
+    return cleaned
+
+
+def _page_scrape(url: str, workdir: str) -> str:
+    """Extrait la vidéo en lisant directement les données de la page TikTok.
+
+    Beaucoup plus rapide et plus fiable que yt-dlp depuis un serveur :
+    aucune résolution de défi JavaScript.
+    """
+    session = requests.Session()
+    session.headers.update(
+        {"User-Agent": _BROWSER_UA, "Accept-Language": "en-US,en;q=0.9"}
+    )
+
+    response = session.get(url, timeout=25, allow_redirects=True)
+    response.raise_for_status()
+    html = response.text
+
+    if "cross_border_violation" in html:
+        raise RuntimeError("cross_border : vidéo bloquée dans cette région")
+
+    links = _video_links_from_html(html)
+    if not links:
+        raise RuntimeError("page TikTok : aucun lien vidéo trouvé")
+
+    log.info("page TikTok : %d lien(s) vidéo trouvé(s)", len(links))
+
+    errors = []
+    for index, link in enumerate(links[:6]):
+        path = os.path.join(workdir, f"page_{index}.mp4")
+        try:
+            _download_direct(link, path)
+            if os.path.getsize(path) > 20_000:
+                return path
+            errors.append(f"lien {index} trop petit")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"lien {index}: {str(exc)[:80]}")
+
+    raise RuntimeError("page TikTok : téléchargement impossible -> " + " | ".join(errors))
+
+
 # Les stratégies sont essayées dans l'ordre, jusqu'à ce qu'une réussisse.
 _STRATEGIES = (
+    ("page", _page_scrape),
     ("yt-dlp", _yt_dlp_download),
-    ("tikwm", _tikwm_download),
 )
 
 # Nom public, utilisé par le diagnostic du bot.
