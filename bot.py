@@ -251,10 +251,21 @@ def process(sender: str, url: str) -> None:
     except Exception as exc:
         log.exception("Échec du traitement")
         message = str(exc).lower()
-        if "cross_border" in message or "10231" in message:
+        if "comfortable for some audiences" in message or "log in for access" in message:
+            reason = (
+                "🔒 Cette vidéo est classée « sensible » par TikTok.\n"
+                "Elle nécessite d'être connecté à un compte : impossible à télécharger.\n"
+                "Ce n'est pas un problème du bot."
+            )
+        elif "cross_border" in message or "10231" in message:
             reason = "Cette vidéo n'est pas accessible depuis notre serveur (restriction de pays)."
         elif "private" in message or "login" in message or "not available" in message:
             reason = "Cette vidéo est privée, supprimée ou interdite dans cette région."
+        elif "aucun lien vidéo" in message:
+            reason = (
+                "Cette publication n'est pas une vidéo (diaporama de photos)\n"
+                "ou elle est réservée aux comptes connectés."
+            )
         elif "unsupported url" in message:
             reason = "Ce lien n'est pas reconnu comme un lien TikTok valide."
         elif "timed out" in message or "timeout" in message or "transport" in message:
